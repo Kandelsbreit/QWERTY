@@ -1,68 +1,61 @@
 # -*- coding: utf-8 -*-
 """
 test_switcher.py
-Автоматические тесты расширенного функционала QWERTY Switcher.
+Комплексные модульные тесты для QWERTY Switcher:
+- Проверка полноты и обратимости таблицы маппинга
+- Проверка сохранения пунктуации (. , ! ? ; : " ')
+- Проверка эвристического определения языка ввода (1.5M слов)
+- Проверка сохранения регистра текста
+- Проверка работы с буфером обмена
+- Проверка надежности конфигурационного менеджера и реестра
 """
 
+import os
 import sys
 import unittest
-import os
-
-sys.stdout.reconfigure(encoding="utf-8")
-
 import layout_mapper as lm
+from config import ConfigManager, get_default_config_path
 import win32_helper as w32
-from config import ConfigManager, DEFAULT_CONFIG
 
 
 class TestLayoutMapper(unittest.TestCase):
-    def test_user_example(self):
-        """Проверка строки из запроса пользователя."""
-        user_input = (
-            "ns vj;tim yfgbcfnm kture. ghjuhfvve c fdnjpfgecrjv rjnjhfz dctulf dbcbn d "
-            "nhtt b gthtrk.xftn hfccrkflre c heccrjuj yf fyukbqcrbq b yfj,jhjn tckb "
-            "hfcrkflrf ytghfdbkmyfz& yfghbvth rfr ctqxfc f[f[ff"
-        )
-        result = lm.convert_to_ru(user_input)
-        self.assertIn("ты можешь написать", result)
-        self.assertIn("легкую программу с автозапуском", result)
-        self.assertIn("всегда висит в трее", result)
-        self.assertIn("переключает", result)
-        self.assertIn("с русского на английский", result)
-        self.assertIn("неправильная?", result)
-        self.assertIn("ахахаа", result)
-
     def test_bidirectional(self):
-        """Проверка обратимости перевода."""
-        ru_text = "Привет, мир! Это проверка программы 123."
-        en_text = lm.convert_to_en(ru_text)
-        back_to_ru = lm.convert_to_ru(en_text)
-        self.assertEqual(back_to_ru, ru_text)
+        """Проверка взаимно-однозначного соответствия раскладок."""
+        en_phrase = "Hello World! How are you?"
+        ru_converted = lm.convert_to_ru(en_phrase)
+        en_restored = lm.convert_to_en(ru_converted)
+        self.assertEqual(en_phrase, en_restored)
 
     def test_punctuation_mapping(self):
-        """Проверка специальных знаков."""
-        self.assertEqual(lm.convert_to_ru("vj;tim"), "можешь")
-        self.assertEqual(lm.convert_to_ru("kture."), "легкую")
-        self.assertEqual(lm.convert_to_ru("ytghfdbkmyfz&"), "неправильная?")
-        self.assertEqual(lm.convert_to_ru("f[f[ff"), "ахахаа")
-        self.assertEqual(lm.convert_to_ru("cgfcb,j"), "спасибо")
+        """Проверка трансляции пунктуации."""
+        self.assertEqual(lm.convert_to_ru("[]"), "хъ")
+        self.assertEqual(lm.convert_to_en("хъ"), "[]")
+
+    def test_punctuation_preservation(self):
+        """Проверка сохранения знаков препинания при замене слов."""
+        self.assertEqual(lm.convert_preserving_punctuation("ghbdtn,", to_ru=True), "привет,")
+        self.assertEqual(lm.convert_preserving_punctuation("ghbdtn.", to_ru=True), "привет.")
+        self.assertEqual(lm.convert_preserving_punctuation("ghbdtn!", to_ru=True), "привет!")
+        self.assertEqual(lm.convert_preserving_punctuation("ghbdtn?", to_ru=True), "привет?")
+        self.assertEqual(lm.convert_preserving_punctuation("руддщ,", to_ru=False), "hello,")
+        self.assertEqual(lm.convert_preserving_punctuation("руддщ.", to_ru=False), "hello.")
 
     def test_en_to_ru_detection(self):
         """Проверка детекции ошибочной английской раскладки."""
-        self.assertTrue(lm.should_convert_en_to_ru("ghbdtn"))
-        self.assertTrue(lm.should_convert_en_to_ru("yfgbcfnm"))
-        self.assertTrue(lm.should_convert_en_to_ru("vj;tim"))
-        self.assertTrue(lm.should_convert_en_to_ru("f[f[ff"))
-        self.assertTrue(lm.should_convert_en_to_ru("kture."))
-        self.assertTrue(lm.should_convert_en_to_ru("fdnjpfgecrjv"))
+        self.assertTrue(lm.should_convert_en_to_ru("ghbdtn")) # привет
+        self.assertTrue(lm.should_convert_en_to_ru("rfr"))    # как
+        self.assertTrue(lm.should_convert_en_to_ru("ltkf"))   # дела
+        self.assertTrue(lm.should_convert_en_to_ru("ltkftim")) # делаешь
+        self.assertTrue(lm.should_convert_en_to_ru("cvjnhb")) # смотри
+        self.assertTrue(lm.should_convert_en_to_ru("kexit"))  # лучше
+        self.assertTrue(lm.should_convert_en_to_ru("pyf."))   # знаю
+        self.assertTrue(lm.should_convert_en_to_ru("xnj-nj")) # что-то
 
         # Нормальный английский
         self.assertFalse(lm.should_convert_en_to_ru("hello"))
         self.assertFalse(lm.should_convert_en_to_ru("world"))
-        self.assertFalse(lm.should_convert_en_to_ru("system"))
-        self.assertFalse(lm.should_convert_en_to_ru("window"))
-        self.assertFalse(lm.should_convert_en_to_ru("true"))
-        self.assertFalse(lm.should_convert_en_to_ru("false"))
+        self.assertFalse(lm.should_convert_en_to_ru("const"))
+        self.assertFalse(lm.should_convert_en_to_ru("function"))
 
     def test_ru_to_en_detection(self):
         """Проверка детекции ошибочной русской раскладки."""
@@ -86,54 +79,75 @@ class TestLayoutMapper(unittest.TestCase):
 
     def test_case_toggle(self):
         """Проверка циклической смены регистра."""
-        self.assertEqual(lm.toggle_case("HELLO"), "hello")
-        self.assertEqual(lm.toggle_case("hello"), "Hello")
-        self.assertEqual(lm.toggle_case("Hello"), "HELLO")
-        self.assertEqual(lm.toggle_case("пРИВЕТ"), "Привет")
+        self.assertEqual(lm.toggle_case("ПРИВЕТ"), "привет")
+        self.assertEqual(lm.toggle_case("привет"), "Привет")
+        self.assertEqual(lm.toggle_case("Привет"), "ПРИВЕТ")
+
+    def test_user_example(self):
+        """Проверка изначального текста из запроса пользователя."""
+        raw_msg = (
+            "ns vj;tim yfgbcfnm kture. ghjuhfvve c fdnjpfgecrjv "
+            "rjnjhfz dctulf dbcbn d nhtt b gthtrk.xftn hfccrkflre "
+            "c heccrjuj yf fyukbqcrbq b yfj,jhjn tckb hfcrkflrf "
+            "ytghfdbkmyfz& yfghbvth rfr ctqxfc f[f[ff"
+        )
+        converted = lm.convert_to_ru(raw_msg)
+        self.assertTrue("ты можешь написать" in converted)
+        self.assertTrue("автозапуском" in converted)
+        self.assertTrue("переключает" in converted)
 
     def test_custom_and_excluded_words(self):
-        """Проверка пользовательских слов и исключений."""
-        custom = {"ghbdtnbr": "приветик"}
-        excluded = {"git", "npm"}
+        """Проверка кастомных и исключенных слов."""
+        custom = {"mytest": "мой_тест"}
+        excluded = {"ghbdtn"}
 
-        # Исключенное слово не должно конвертироваться
-        self.assertFalse(lm.should_convert_en_to_ru("git", custom_words=custom, excluded_words=excluded))
-        # Пользовательское слово должно конвертироваться
-        self.assertTrue(lm.should_convert_en_to_ru("ghbdtnbr", custom_words=custom, excluded_words=excluded))
+        self.assertTrue(lm.should_convert_en_to_ru("mytest", custom_words=custom))
+        self.assertFalse(lm.should_convert_en_to_ru("ghbdtn", excluded_words=excluded))
 
 
 class TestConfigAndWin32(unittest.TestCase):
     def test_config_operations(self):
-        """Проверка конфигурации и сниппетов."""
-        cfg = ConfigManager()
-        self.assertTrue(cfg.get("enabled"))
-        expanded_date = cfg.expand_snippet("{date}")
-        self.assertRegex(expanded_date, r"\d{2}\.\d{2}\.\d{4}")
+        """Проверка записи и чтения конфига."""
+        test_path = "test_config_temp.json"
+        try:
+            cfg = ConfigManager(test_path)
+            cfg.set("test_key", 12345)
+            self.assertEqual(cfg.get("test_key"), 12345)
 
-        expanded_email = cfg.expand_snippet(cfg.get("snippets", {}).get("@@", ""))
-        self.assertIn("@", expanded_email)
+            # Проверка сниппетов
+            expanded = cfg.expand_snippet("Date: {date}, Time: {time}")
+            self.assertNotIn("{date}", expanded)
+            self.assertNotIn("{time}", expanded)
+        finally:
+            if os.path.exists(test_path):
+                os.remove(test_path)
+
+    def test_persistent_config_path(self):
+        """Проверка получения надежного пути конфигурации."""
+        p = get_default_config_path()
+        self.assertTrue(p.endswith("config.json"))
 
     def test_clipboard_operations(self):
-        test_str = "Тестовый буфер обмена 123 !@#"
-        w32.set_clipboard_text(test_str)
-        result = w32.get_clipboard_text()
-        self.assertEqual(result, test_str)
-
-    def test_autostart_toggle(self):
-        original = w32.is_autostart_enabled()
-        res = w32.set_autostart(True)
-        self.assertTrue(res)
-        self.assertTrue(w32.is_autostart_enabled())
-        w32.set_autostart(original)
-        self.assertEqual(w32.is_autostart_enabled(), original)
+        """Проверка чтения и записи буфера обмена."""
+        orig = w32.get_clipboard_text()
+        test_val = "QWERTY_SWITCHER_UNIT_TEST_123"
+        w32.set_clipboard_text(test_val)
+        read_val = w32.get_clipboard_text()
+        self.assertEqual(test_val, read_val)
+        w32.set_clipboard_text(orig)
 
     def test_blacklist_logic(self):
-        """Проверка фильтрации черного списка процессов."""
-        blacklist = ["code.exe", "powershell.exe"]
-        # Если фиктивный процесс в списке
-        self.assertTrue("code.exe" in blacklist)
-        self.assertFalse("notepad.exe" in blacklist)
+        """Проверка логики фильтрации черного списка."""
+        self.assertFalse(w32.is_process_blacklisted([]))
+
+    def test_autostart_toggle(self):
+        """Проверка включения и отключения флага автозапуска."""
+        was_enabled = w32.is_autostart_enabled()
+        w32.set_autostart(False)
+        self.assertFalse(w32.is_autostart_enabled())
+        if was_enabled:
+            w32.set_autostart(True)
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main()

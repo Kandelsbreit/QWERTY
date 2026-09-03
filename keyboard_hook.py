@@ -3,6 +3,8 @@
 keyboard_hook.py
 Низкоуровневый перехватчик клавиатуры (WH_KEYBOARD_LL):
 - Атомарная замена слов и разделителей (SendInput)
+- Сохранение пунктуации при автозамене (исключает превращение запятой в 'б' или точки в 'ю')
+- Поддержка дефиса '-' в сложных словах (что-то, как-нибудь, well-known)
 - Строгая проверка текущей раскладки: исключает ложную конвертацию уже русских слов
 - Откат ошибочной замены по Backspace (Undo)
 - Переключение раскладки по двойному нажатию Shift
@@ -64,13 +66,14 @@ VK_LETTERS_RU = {
     0x59: "н", 0x5A: "я"
 }
 
+# Включаем дефис 0xBD и равно 0xBB
 VK_OEM_EN = {
     0xBA: ";", 0xBF: "/", 0xC0: "`", 0xDB: "[", 0xDC: "\\", 0xDD: "]", 0xDE: "'",
-    0xBC: ",", 0xBE: "."
+    0xBC: ",", 0xBE: ".", 0xBD: "-", 0xBB: "="
 }
 VK_OEM_RU = {
     0xBA: "ж", 0xBF: ".", 0xC0: "ё", 0xDB: "х", 0xDC: "\\", 0xDD: "ъ", 0xDE: "э",
-    0xBC: "б", 0xBE: "ю"
+    0xBC: "б", 0xBE: "ю", 0xBD: "-", 0xBB: "="
 }
 
 VK_SHIFT_NUMS_EN = {
@@ -266,13 +269,13 @@ class KeyboardHookManager:
         w32.toggle_layout()
 
     def _handle_hotkey_pause(self):
-        """Обработка Pause / Break."""
+        """Обработка Pause / Break с сохранением буфера обмена."""
         def task():
             try:
-                copied = w32.copy_selection()
+                copied, old_clip = w32.copy_selection()
                 if copied and len(copied.strip()) > 0:
                     converted = lm.convert_auto(copied)
-                    w32.paste_text(converted)
+                    w32.paste_text(converted, restore_old_clipboard=old_clip)
                     w32.toggle_layout()
                     with self.lock:
                         self.current_word.clear()
@@ -286,20 +289,20 @@ class KeyboardHookManager:
         threading.Thread(target=task, daemon=True).start()
 
     def _handle_case_toggle(self):
-        """Смена регистра выделенного текста."""
+        """Смена регистра выделенного текста с сохранением буфера обмена."""
         def task():
             try:
-                copied = w32.copy_selection()
+                copied, old_clip = w32.copy_selection()
                 if copied and len(copied) > 0:
                     new_text = lm.toggle_case(copied)
-                    w32.paste_text(new_text)
+                    w32.paste_text(new_text, restore_old_clipboard=old_clip)
             except Exception:
                 pass
 
         threading.Thread(target=task, daemon=True).start()
 
     def _handle_auto_switch(self, delimiter_char: str):
-        """Проверяет слово на сниппеты и ошибочную раскладку."""
+        """Проверяет слово на сниппеты и ошибочную раскладку с сохранением пунктуации."""
         with self.lock:
             word = "".join(self.current_word)
             self.current_word.clear()
@@ -338,7 +341,6 @@ class KeyboardHookManager:
 
         if is_ru_layout:
             # Активна русская раскладка: проверяем ТОЛЬКО ошибочный ввод английских слов (руддщ -> hello)
-            # Русские слова (например, "делаешь", "привет") ЗДЕСЬ НИКОГДА НЕ КОНВЕРТИРУЮТСЯ!
             should_to_en = lm.should_convert_ru_to_en(word, custom_words, excluded_words)
         else:
             # Активна английская раскладка: проверяем ТОЛЬКО ошибочный ввод русских слов (ghbdtn -> привет)
@@ -349,7 +351,9 @@ class KeyboardHookManager:
 
         target_lang = "ru" if should_to_ru else "en"
         orig_lang = "en" if should_to_ru else "ru"
-        converted_word = lm.convert_to_ru(word) if should_to_ru else lm.convert_to_en(word)
+
+        # Сохраняем завершающие знаки препинания (. , ! ? ; : " ')
+        converted_word = lm.convert_preserving_punctuation(word, to_ru=should_to_ru)
 
         if self.config_mgr.get("undo_on_backspace", True):
             self._last_replacement = {

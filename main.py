@@ -10,6 +10,7 @@ main.py
 
 import sys
 import ctypes
+from ctypes import wintypes
 from config import ConfigManager
 from keyboard_hook import KeyboardHookManager
 from tray_app import TrayApplication
@@ -19,6 +20,16 @@ user32 = ctypes.windll.user32
 
 MUTEX_NAME = "Local\\QWERTY_Switcher_Single_Instance_Mutex"
 ERROR_ALREADY_EXISTS = 183
+
+# Строгая 64-битная типизация системных функций
+kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, ctypes.c_wchar_p]
+kernel32.CreateMutexW.restype = wintypes.HANDLE
+
+kernel32.GetLastError.argtypes = []
+kernel32.GetLastError.restype = wintypes.DWORD
+
+user32.MessageBoxW.argtypes = [wintypes.HWND, ctypes.c_wchar_p, ctypes.c_wchar_p, wintypes.UINT]
+user32.MessageBoxW.restype = ctypes.c_int
 
 
 def ensure_single_instance():

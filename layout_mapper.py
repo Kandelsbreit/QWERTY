@@ -150,6 +150,20 @@ def convert_to_en(text: str) -> str:
     return text.translate(RU_TO_EN_TABLE)
 
 
+def convert_preserving_punctuation(word: str, to_ru: bool = True) -> str:
+    """
+    Конвертирует слово, сохраняя хвостовые знаки препинания (. , ! ? ; : " ' -)
+    без их ошибочной трансляции в русские/английские буквы
+    (например, 'ghbdtn,' -> 'привет,', а не 'приветб').
+    """
+    base_word = word.rstrip(".,!?;:\"'-")
+    trailing = word[len(base_word):]
+    if to_ru:
+        return convert_to_ru(base_word) + trailing
+    else:
+        return convert_to_en(base_word) + trailing
+
+
 def convert_auto(text: str) -> str:
     """
     Автоматически определяет исходный язык строки и конвертирует в противоположный.

@@ -3,9 +3,11 @@
 config.py
 Управление конфигурацией QWERTY Switcher.
 Загрузка, сохранение и значения по умолчанию в формате JSON.
+Поддерживает постоянное сохранение настроек рядом с .exe или в %APPDATA%.
 """
 
 import os
+import sys
 import json
 from datetime import datetime
 
@@ -44,13 +46,37 @@ DEFAULT_CONFIG = {
 }
 
 
+def get_default_config_path() -> str:
+    """
+    Определяет надежный постоянный путь к config.json.
+    - Для автономного .exe: папка с исполняемым файлом.
+    - Если папка с .exe защищена от записи (Program Files): %APPDATA%\\QWERTY_Switcher.
+    - Для исходного кода: папка со скриптом.
+    """
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        test_file = os.path.join(exe_dir, ".write_test")
+        try:
+            with open(test_file, "w") as f:
+                f.write("1")
+            os.remove(test_file)
+            return os.path.join(exe_dir, CONFIG_FILE)
+        except (PermissionError, OSError):
+            pass
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        app_dir = os.path.join(appdata, "QWERTY_Switcher")
+        os.makedirs(app_dir, exist_ok=True)
+        return os.path.join(app_dir, CONFIG_FILE)
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, CONFIG_FILE)
+
+
 class ConfigManager:
     def __init__(self, config_path=None):
-        if not config_path:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            self.config_path = os.path.join(base_dir, CONFIG_FILE)
-        else:
-            self.config_path = config_path
+        self.config_path = config_path or get_default_config_path()
         self.config = {}
         self.load()
 
@@ -72,6 +98,9 @@ class ConfigManager:
     def save(self):
         """Сохраняет текущую конфигурацию в файл."""
         try:
+            dirname = os.path.dirname(self.config_path)
+            if dirname:
+                os.makedirs(dirname, exist_ok=True)
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
         except Exception as e:

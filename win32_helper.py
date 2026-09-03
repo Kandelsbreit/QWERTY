@@ -6,7 +6,7 @@ win32_helper.py
 - Атомарная замена текста через SendInput (полная 40-байтная структура для x64 Windows)
 - Работа с буфером обмена
 - Определение процесса активного окна и проверка черного списка
-- Управление автозапуском в реестре Windows
+- Надежное управление автозапуском в реестре Windows (включая работу в скомпилированном .exe)
 """
 
 import sys
@@ -378,8 +378,10 @@ def set_clipboard_text(text: str):
         time.sleep(0.02)
 
 
-def copy_selection() -> str:
-    """Эмулирует нажатие Ctrl+C и возвращает скопированный текст."""
+def copy_selection() -> tuple:
+    """
+    Эмулирует нажатие Ctrl+C и возвращает (скопированный_текст, предыдущий_буфер).
+    """
     old_clipboard = get_clipboard_text()
     set_clipboard_text("")
 
@@ -401,12 +403,15 @@ def copy_selection() -> str:
     copied = get_clipboard_text()
     if not copied:
         set_clipboard_text(old_clipboard)
-        return ""
-    return copied
+        return "", old_clipboard
+    return copied, old_clipboard
 
 
-def paste_text(text: str):
-    """Помещает текст в буфер и эмулирует нажатие Ctrl+V."""
+def paste_text(text: str, restore_old_clipboard=None):
+    """
+    Помещает текст в буфер, эмулирует Ctrl+V и опционально восстанавливает
+    предыдущее содержимое буфера обмена пользователя.
+    """
     set_clipboard_text(text)
     time.sleep(0.02)
 
@@ -423,6 +428,13 @@ def paste_text(text: str):
     inputs[3].ki.dwFlags = KEYEVENTF_KEYUP
 
     user32.SendInput(4, inputs, ctypes.sizeof(INPUT))
+
+    if restore_old_clipboard:
+        def restore_task():
+            time.sleep(0.3)
+            set_clipboard_text(restore_old_clipboard)
+        import threading
+        threading.Thread(target=restore_task, daemon=True).start()
 
 
 # --- Управление автозапуском через Windows Registry ---
@@ -443,20 +455,24 @@ def set_autostart(enable: bool, command_path: str = None) -> bool:
     try:
         if enable:
             if not command_path:
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                exe_path = os.path.join(base_dir, "dist", "QWERTY_Switcher.exe")
-                vbs_path = os.path.join(base_dir, "run.vbs")
-
-                if os.path.exists(exe_path):
-                    command_path = f'"{exe_path}"'
-                elif os.path.exists(vbs_path):
-                    command_path = f'wscript.exe "{vbs_path}"'
+                # Если приложение скомпилировано в .exe через PyInstaller
+                if getattr(sys, "frozen", False):
+                    command_path = f'"{sys.executable}"'
                 else:
-                    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-                    if not os.path.exists(pythonw):
-                        pythonw = sys.executable
-                    main_py = os.path.join(base_dir, "main.py")
-                    command_path = f'"{pythonw}" "{main_py}"'
+                    base_dir = os.path.dirname(os.path.abspath(__file__))
+                    exe_path = os.path.join(base_dir, "dist", "QWERTY_Switcher.exe")
+                    vbs_path = os.path.join(base_dir, "run.vbs")
+
+                    if os.path.exists(exe_path):
+                        command_path = f'"{exe_path}"'
+                    elif os.path.exists(vbs_path):
+                        command_path = f'wscript.exe "{vbs_path}"'
+                    else:
+                        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+                        if not os.path.exists(pythonw):
+                            pythonw = sys.executable
+                        main_py = os.path.join(base_dir, "main.py")
+                        command_path = f'"{pythonw}" "{main_py}"'
 
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
                 winreg.SetValueEx(key, REG_APP_NAME, 0, winreg.REG_SZ, command_path)
