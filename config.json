@@ -1,0 +1,39 @@
+{
+  "enabled": true,
+  "auto_switch": true,
+  "double_shift_switch": true,
+  "undo_on_backspace": true,
+  "app_blacklist": [
+    "code.exe",
+    "devenv.exe",
+    "powershell.exe",
+    "cmd.exe",
+    "windowsterminal.exe",
+    "wt.exe",
+    "cs2.exe",
+    "dota2.exe",
+    "steam.exe",
+    "epicgameslauncher.exe"
+  ],
+  "snippets": {
+    "@@": "my_email@example.com",
+    "дд": "{date}",
+    "dd": "{date}",
+    "вв": "{time}",
+    "tt": "{time}"
+  },
+  "custom_words": {
+    "ghbdtnbr": "приветик"
+  },
+  "excluded_words": [
+    "git",
+    "npm",
+    "pip",
+    "run",
+    "add",
+    "commit",
+    "push",
+    "pull",
+    "test"
+  ]
+}
