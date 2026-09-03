@@ -26,12 +26,29 @@ RU_IMPOSSIBLE_CLUSTERS = (
     "ъь", "ьъ", "щщк", "ццщ"
 )
 
+# Характерные начала русских слов в английской раскладке (невозможные в английском)
+RU_STARTS_IN_EN = (
+    "lt", "rt", "dl", "dn", "dm", "db", "dp", "dg", "tk", "tb", "vj", "vm", "vs", "vb", "vl",
+    "bd", "bg", "bk", "fp", "fd", "fb", "jh", "jl", "jm", "jn", "jb", "jr", "js", "yf", "yg",
+    "yk", "ym", "yn", "yr", "ys", "yt", "nj", "crf", "ctq", "dht", "vys", "xnj", "rfr", "rnj",
+    "ult", "rulf", "gth", "ghj", "ghb", "gjl", "pf", "bp", "cg", "cb", "cj", "cv", "cn", "cl",
+    "c;", "cy", "kex", "[j", "[e", "[f", "[b", "[h", "[k", "[v", "[y", "pyf", "cvj", "gjp",
+    "ghf", "plj", "rhf", "rkf", "gjb", "gjl", "gjv", "gjr", "gjc", "gjt", "gjh"
+)
+
+# Характерные русские окончания в английской раскладке
+RU_ENDS_IN_EN = (
+    "tim", "bim", "nm", "nmcz", "ncz", "kb", "sq", "bq", "jq", "juj", "tuj", "jve", "tve",
+    "s[", "b[", "jcnm", "tcnm", "cndj", "ybr", "xbr", "obr", "kf", "kj", "kb", "fnm", "znm",
+    "bnm", "etn", "bnt", "trs", "bv", "tv"
+)
+
 # Невозможные в английском языке сочетания (n-grams)
 EN_IMPOSSIBLE_NGRAMS = (
     "ghj", "yfg", "hcc", "dbc", "gth", "tck", "ytg", "vj;", "f[f", "ctq", "bcf",
     "rfk", "bcr", "xft", "yfj", "nht", "kfl", "rkf", "ghb", "gjh", "ytn",
     "djn", "rfr", "xtv", "xtuj", "rjulf", "njulf", "gjxtve", "pfxtv", "xnj",
-    "dct", "e;t", "bkb", "ds", "vs", "jyb", "jyf", "jyb"
+    "dct", "e;t", "bkb", "ds", "vs", "jyb", "jyf", "jyb", "k/l", "pyf"
 )
 
 # Частые русские приставки
@@ -58,7 +75,10 @@ COMMON_RU_WORDS_IN_EN = {
     "hfccrkflre": "раскладку", "hfcrkflrf": "раскладка", "heccrjuj": "русского",
     "fyukbqcrbq": "английский", "yfj,jhjn": "наоборот", "ytghfdbkmyfz": "неправильная",
     "yfghbvth": "например", "f[f[ff": "ахахаа", "f[f[f": "ахаха", "f[f": "аха",
-    "vj;tim": "можешь", "yfgbcfnm": "написать"
+    "vj;tim": "можешь", "yfgbcfnm": "написать", "ltkf": "дела", "ltkftim": "делаешь",
+    "ltkfk": "делал", "ltkfnm": "делать", "crfpfnm": "сказать", "crfpfk": "сказал",
+    "pyf/": "знаю", "pyftim": "знаешь", "cvjnhb": "смотри", "kexit": "лучше",
+    "rjhjxt": "короче", "pljhjdj": "здорово", "rhfcbdj": "красиво", "ghbrjk": "прикол"
 }
 
 # Топ частых английских слов в RU раскладке
@@ -121,7 +141,6 @@ def toggle_case(text: str) -> str:
     elif text.istitle():
         return text.upper()
     else:
-        # Инверсия регистра для смешанного текста (например, пРИВЕТ)
         return text.swapcase()
 
 
@@ -147,23 +166,20 @@ def should_convert_en_to_ru(word: str, custom_words=None, excluded_words=None) -
 
     lower = clean_word.lower()
 
-    # Проверка списка исключений пользователя
     if excluded_words and lower in excluded_words:
         return False
 
-    # Пользовательский словарь
     if custom_words and lower in custom_words:
         return True
 
-    # Игнорируем URL и код
     if is_url_or_code(clean_word):
         return False
 
-    # Точное совпадение со словарем
+    # Прямой словарный хит
     if lower in COMMON_RU_WORDS_IN_EN:
         return True
 
-    # 1. Проверка наличия символов [ ] ; ' внутри или в конце слова
+    # 1. Наличие русских пунктуационных букв в английской раскладке: [ ] ; ' ,
     if any(ch in "[];'" for ch in lower):
         if any(ch in EN_ALPHABET for ch in lower):
             return True
@@ -173,20 +189,25 @@ def should_convert_en_to_ru(word: str, custom_words=None, excluded_words=None) -
         if ngram in lower:
             return True
 
-    # 3. Проверка транслированного слова на соответствие русским паттернам
+    # 3. Характерные начала и окончания русских слов
+    if lower.startswith(RU_STARTS_IN_EN):
+        return True
+
+    if lower.endswith(RU_ENDS_IN_EN):
+        return True
+
+    # 4. Проверка транслированного слова на соответствие русским паттернам
     ru_candidate = convert_to_ru(lower)
 
     if ru_candidate.startswith(RU_INVALID_STARTS):
         return False
 
-    # Проверка на русские приставки
     if len(ru_candidate) >= 4:
         for prefix in RU_PREFIXES:
             if ru_candidate.startswith(prefix):
                 return True
 
-    # Проверка на характерные русские окончания
-    if len(ru_candidate) >= 5:
+    if len(ru_candidate) >= 4:
         if ru_candidate.endswith((
             "ать", "ять", "ить", "еть", "уть", "овать", "евать",
             "ться", "тся", "ный", "ная", "ное", "ные", "ского",

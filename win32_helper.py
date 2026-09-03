@@ -3,9 +3,9 @@
 win32_helper.py
 Функции взаимодействия с Windows API:
 - Получение и переключение раскладки активного окна
-- Эмуляция ввода клавиш (Backspace, Unicode-символы)
+- Атомарная замена текста через SendInput (полная 40-байтная структура для x64 Windows)
 - Работа с буфером обмена
-- Определение имени исполняемого процесса активного окна
+- Определение процесса активного окна и проверка черного списка
 - Управление автозапуском в реестре Windows
 """
 
@@ -42,6 +42,47 @@ VK_V = 0x56
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
+# Полная спецификация структур Windows SDK для SendInput (ровно 40 байт на x64)
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_ulonglong)
+    ]
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_ulonglong)
+    ]
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD)
+    ]
+
+class INPUT(ctypes.Structure):
+    class _INPUT(ctypes.Union):
+        _fields_ = [
+            ("mi", MOUSEINPUT),
+            ("ki", KEYBDINPUT),
+            ("hi", HARDWAREINPUT)
+        ]
+    _anonymous_ = ("_input",)
+    _fields_ = [
+        ("type", wintypes.DWORD),
+        ("_input", _INPUT)
+    ]
+
+
 # Строгая типизация ВСЕХ функций Win32 API для 64-битной Windows
 user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = wintypes.HWND
@@ -61,16 +102,8 @@ user32.PostMessageW.restype = wintypes.BOOL
 user32.GetKeyState.argtypes = [ctypes.c_int]
 user32.GetKeyState.restype = ctypes.c_short
 
-user32.ToUnicodeEx.argtypes = [
-    ctypes.c_uint,
-    ctypes.c_uint,
-    ctypes.POINTER(ctypes.c_byte),
-    wintypes.LPWSTR,
-    ctypes.c_int,
-    ctypes.c_uint,
-    ctypes.c_void_p
-]
-user32.ToUnicodeEx.restype = ctypes.c_int
+user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
+user32.SendInput.restype = ctypes.c_uint
 
 kernel32.QueryFullProcessImageNameW.argtypes = [
     wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
@@ -82,26 +115,6 @@ kernel32.OpenProcess.restype = wintypes.HANDLE
 
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel32.CloseHandle.restype = wintypes.BOOL
-
-# Структуры для SendInput
-class KEYBDINPUT(ctypes.Structure):
-    _fields_ = [
-        ("wVk", wintypes.WORD),
-        ("wScan", wintypes.WORD),
-        ("dwFlags", wintypes.DWORD),
-        ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.c_ulonglong)
-    ]
-
-class INPUT(ctypes.Structure):
-    class _INPUT(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
-    _anonymous_ = ("_input",)
-    _fields_ = [("type", wintypes.DWORD), ("_input", _INPUT)]
-
-
-user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
-user32.SendInput.restype = ctypes.c_uint
 
 
 def get_foreground_window():
@@ -218,54 +231,73 @@ def toggle_layout(hwnd=None):
         pass
 
 
+def atomic_replace_text(backspaces: int, new_text: str, target_lang: str = None):
+    """
+    Атомарно удаляет backspaces символов и вводит new_text в ОДНОМ вызове SendInput.
+    Гарантирует отсутствие гонок и задержек между удалением и вводом.
+    """
+    if target_lang:
+        switch_layout_to(target_lang)
+
+    total_events = (backspaces * 2) + (len(new_text) * 2)
+    if total_events == 0:
+        return 0
+
+    inputs = (INPUT * total_events)()
+    idx = 0
+
+    # 1. Backspaces
+    for _ in range(backspaces):
+        inputs[idx].type = INPUT_KEYBOARD
+        inputs[idx].ki.wVk = VK_BACK
+        inputs[idx].ki.wScan = 0
+        inputs[idx].ki.dwFlags = 0
+        inputs[idx].ki.time = 0
+        inputs[idx].ki.dwExtraInfo = 0
+        idx += 1
+
+        inputs[idx].type = INPUT_KEYBOARD
+        inputs[idx].ki.wVk = VK_BACK
+        inputs[idx].ki.wScan = 0
+        inputs[idx].ki.dwFlags = KEYEVENTF_KEYUP
+        inputs[idx].ki.time = 0
+        inputs[idx].ki.dwExtraInfo = 0
+        idx += 1
+
+    # 2. Unicode символы нового текста (включая пробел или перенос строки)
+    for ch in new_text:
+        code = ord(ch)
+        inputs[idx].type = INPUT_KEYBOARD
+        inputs[idx].ki.wVk = 0
+        inputs[idx].ki.wScan = code
+        inputs[idx].ki.dwFlags = KEYEVENTF_UNICODE
+        inputs[idx].ki.time = 0
+        inputs[idx].ki.dwExtraInfo = 0
+        idx += 1
+
+        inputs[idx].type = INPUT_KEYBOARD
+        inputs[idx].ki.wVk = 0
+        inputs[idx].ki.wScan = code
+        inputs[idx].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+        inputs[idx].ki.time = 0
+        inputs[idx].ki.dwExtraInfo = 0
+        idx += 1
+
+    return user32.SendInput(total_events, inputs, ctypes.sizeof(INPUT))
+
+
 def send_backspaces(count: int):
     """Эмулирует нажатие клавиши Backspace указанное количество раз."""
     if count <= 0:
         return
-    try:
-        inputs = (INPUT * (count * 2))()
-        for i in range(count):
-            inputs[i * 2].type = INPUT_KEYBOARD
-            inputs[i * 2].ki.wVk = VK_BACK
-            inputs[i * 2].ki.dwFlags = 0
-
-            inputs[i * 2 + 1].type = INPUT_KEYBOARD
-            inputs[i * 2 + 1].ki.wVk = VK_BACK
-            inputs[i * 2 + 1].ki.dwFlags = KEYEVENTF_KEYUP
-
-        user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT))
-    except Exception:
-        pass
+    atomic_replace_text(backspaces=count, new_text="")
 
 
 def send_unicode_text(text: str):
-    """
-    Эмулирует ввод строки в виде Unicode-символов.
-    """
+    """Эмулирует ввод строки в виде Unicode-символов."""
     if not text:
         return
-    try:
-        inputs = []
-        for ch in text:
-            code = ord(ch)
-            inp_down = INPUT()
-            inp_down.type = INPUT_KEYBOARD
-            inp_down.ki.wVk = 0
-            inp_down.ki.wScan = code
-            inp_down.ki.dwFlags = KEYEVENTF_UNICODE
-            inputs.append(inp_down)
-
-            inp_up = INPUT()
-            inp_up.type = INPUT_KEYBOARD
-            inp_up.ki.wVk = 0
-            inp_up.ki.wScan = code
-            inp_up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-            inputs.append(inp_up)
-
-        c_inputs = (INPUT * len(inputs))(*inputs)
-        user32.SendInput(len(c_inputs), c_inputs, ctypes.sizeof(INPUT))
-    except Exception:
-        pass
+    atomic_replace_text(backspaces=0, new_text=text)
 
 
 # --- Работа с буфером обмена Windows ---
@@ -347,9 +379,7 @@ def set_clipboard_text(text: str):
 
 
 def copy_selection() -> str:
-    """
-    Эмулирует нажатие Ctrl+C и возвращает скопированный текст.
-    """
+    """Эмулирует нажатие Ctrl+C и возвращает скопированный текст."""
     old_clipboard = get_clipboard_text()
     set_clipboard_text("")
 
@@ -376,9 +406,7 @@ def copy_selection() -> str:
 
 
 def paste_text(text: str):
-    """
-    Помещает текст в буфер и эмулирует нажатие Ctrl+V.
-    """
+    """Помещает текст в буфер и эмулирует нажатие Ctrl+V."""
     set_clipboard_text(text)
     time.sleep(0.02)
 

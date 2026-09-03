@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 keyboard_hook.py
-Низкоуровневый перехватчик клавиатуры (WH_KEYBOARD_LL) с высокой стабильностью:
-- Безопасная строгая типизация Win32 API для 64-битной Windows
-- Быстрое неблокирующее выполнение хука (все действия выполняются в фоновых worker-потоках)
-- Автоматическое гарантированное снятие хука при выходе через atexit
-- Детерминированный маппинг VK-кодов без вызова ToUnicodeEx (предотвращает зависание буфера ввода)
+Низкоуровневый перехватчик клавиатуры (WH_KEYBOARD_LL):
+- Атомарная замена слов и разделителей (SendInput)
+- Откат ошибочной замены по Backspace (Undo)
+- Переключение раскладки по двойному нажатию Shift
+- Смена регистра текста (Alt + Pause или Shift + F3)
+- Текстовые сниппеты (@@, дд, dd, вв, tt)
+- Игнорирование черного списка приложений
 """
 
 import threading
@@ -51,7 +53,7 @@ VK_F3 = 0x72
 
 LLKHF_INJECTED = 0x00000010
 
-# Маппинг клавиш A-Z
+# Таблицы маппинга символов
 VK_LETTERS_EN = {vk: chr(vk + 32) for vk in range(0x41, 0x5B)}
 VK_LETTERS_RU = {
     0x41: "ф", 0x42: "и", 0x43: "с", 0x44: "в", 0x45: "у", 0x46: "а",
@@ -61,7 +63,6 @@ VK_LETTERS_RU = {
     0x59: "н", 0x5A: "я"
 }
 
-# Пунктуационные клавиши
 VK_OEM_EN = {
     0xBA: ";", 0xBF: "/", 0xC0: "`", 0xDB: "[", 0xDC: "\\", 0xDD: "]", 0xDE: "'",
     0xBC: ",", 0xBE: "."
@@ -71,7 +72,6 @@ VK_OEM_RU = {
     0xBC: "б", 0xBE: "ю"
 }
 
-# Shift-символы цифр
 VK_SHIFT_NUMS_EN = {
     0x31: "!", 0x32: "@", 0x33: "#", 0x34: "$", 0x35: "%",
     0x36: "^", 0x37: "&", 0x38: "*", 0x39: "(", 0x30: ")"
@@ -149,7 +149,7 @@ class KeyboardHookManager:
         self._last_replacement = None
         self.session_blacklist = set()
 
-        # Гарантированное снятие хука при выходе из Python
+        # Автоматическое снятие хука при выходе
         atexit.register(self.stop)
 
     def start(self):
@@ -181,7 +181,6 @@ class KeyboardHookManager:
         self._thread_id = kernel32.GetCurrentThreadId()
         self._callback_ref = HOOKPROC(self._hook_proc)
 
-        # Установка хука WH_KEYBOARD_LL
         self.hook_id = user32.SetWindowsHookExW(
             WH_KEYBOARD_LL,
             self._callback_ref,
@@ -203,28 +202,18 @@ class KeyboardHookManager:
             self.hook_id = None
 
     def _get_char_from_vk_safe(self, vk: int, is_ru: bool) -> str:
-        """
-        Безопасное определение символа без вызова ToUnicodeEx.
-        Не нарушает внутреннее состояние dead-keys и гарантирует мгновенный ответ.
-        """
         caps = bool(user32.GetKeyState(VK_CAPITAL) & 0x0001)
         uppercase = (self.shift_down ^ caps)
 
-        # Буквы A-Z
         if 0x41 <= vk <= 0x5A:
-            if is_ru:
-                ch = VK_LETTERS_RU.get(vk, "")
-            else:
-                ch = VK_LETTERS_EN.get(vk, "")
+            ch = VK_LETTERS_RU.get(vk, "") if is_ru else VK_LETTERS_EN.get(vk, "")
             return ch.upper() if uppercase else ch
 
-        # OEM-клавиши (пунктуация)
         if is_ru and vk in VK_OEM_RU:
             return VK_OEM_RU[vk]
         elif not is_ru and vk in VK_OEM_EN:
             return VK_OEM_EN[vk]
 
-        # Цифры и их Shift-символы
         if 0x30 <= vk <= 0x39:
             if self.shift_down:
                 return (VK_SHIFT_NUMS_RU if is_ru else VK_SHIFT_NUMS_EN).get(vk, "")
@@ -245,17 +234,13 @@ class KeyboardHookManager:
         replacement = self._last_replacement
         self._last_replacement = None
 
-        def task():
-            try:
-                w32.send_backspaces(len(replacement["converted_full"]))
-                w32.switch_layout_to(replacement["orig_lang"])
-                time.sleep(0.01)
-                w32.send_unicode_text(replacement["original"])
-                self.session_blacklist.add(replacement["original"].lower())
-            except Exception:
-                pass
-
-        threading.Thread(target=task, daemon=True).start()
+        # Атомарно возвращаем исходный текст и язык
+        w32.atomic_replace_text(
+            backspaces=len(replacement["converted_full"]),
+            new_text=replacement["original"],
+            target_lang=replacement["orig_lang"]
+        )
+        self.session_blacklist.add(replacement["original"].lower())
         return True
 
     def _convert_last_word_or_line(self, use_full_line=False):
@@ -274,21 +259,15 @@ class KeyboardHookManager:
             else:
                 return
 
-        def task():
-            try:
-                char_count = len(raw_text)
-                w32.send_backspaces(char_count)
-                converted = lm.convert_auto(raw_text)
-                w32.toggle_layout()
-                time.sleep(0.01)
-                w32.send_unicode_text(converted)
-            except Exception:
-                pass
-
-        threading.Thread(target=task, daemon=True).start()
+        converted = lm.convert_auto(raw_text)
+        w32.atomic_replace_text(
+            backspaces=len(raw_text),
+            new_text=converted
+        )
+        w32.toggle_layout()
 
     def _handle_hotkey_pause(self):
-        """Обработка Pause / Break в отдельном потоке."""
+        """Обработка Pause / Break."""
         def task():
             try:
                 copied = w32.copy_selection()
@@ -337,20 +316,16 @@ class KeyboardHookManager:
         if w32.is_process_blacklisted(blacklist):
             return False
 
-        # Текстовые сниппеты
+        # Текстовые сниппеты (атомарная замена)
         snippets = self.config_mgr.get("snippets", {})
         if word in snippets:
             expanded = self.config_mgr.expand_snippet(snippets[word])
-            def task_snippet():
-                try:
-                    w32.send_backspaces(len(word))
-                    w32.send_unicode_text(expanded + delimiter_char)
-                except Exception:
-                    pass
-            threading.Thread(target=task_snippet, daemon=True).start()
+            w32.atomic_replace_text(
+                backspaces=len(word),
+                new_text=expanded + delimiter_char
+            )
             return True
 
-        # Сессионный черный список отмененных слов
         if word.lower() in self.session_blacklist:
             return False
 
@@ -375,23 +350,16 @@ class KeyboardHookManager:
                 "time": time.time()
             }
 
-        def task():
-            try:
-                w32.send_backspaces(len(word))
-                w32.switch_layout_to(target_lang)
-                time.sleep(0.01)
-                w32.send_unicode_text(converted_word + delimiter_char)
-            except Exception:
-                pass
-
-        threading.Thread(target=task, daemon=True).start()
+        # АТОМАРНАЯ ЗАМЕНА В ОДНОМ ВЫЗОВЕ SENDINPUT:
+        # Удаляет исходное слово, переключает раскладку и вставляет исправленное слово с разделителем (пробелом/Enter)
+        w32.atomic_replace_text(
+            backspaces=len(word),
+            new_text=converted_word + delimiter_char,
+            target_lang=target_lang
+        )
         return True
 
     def _hook_proc(self, nCode, wParam, p_kbd_ptr):
-        """
-        Критическая функция хука:
-        НЕ ДОЛЖНА БЛОКИРОВАТЬСЯ, ВЫЗЫВАТЬ МЕДЛЕННЫЕ API ИЛИ ПАДАТЬ.
-        """
         if nCode < 0 or not p_kbd_ptr:
             return user32.CallNextHookEx(None, nCode, wParam, p_kbd_ptr)
 
@@ -399,7 +367,6 @@ class KeyboardHookManager:
             p_kbd = p_kbd_ptr.contents
             flags = p_kbd.flags
 
-            # Игнорируем сгенерированные нами события
             if flags & LLKHF_INJECTED:
                 return user32.CallNextHookEx(None, nCode, wParam, p_kbd_ptr)
 
@@ -413,7 +380,6 @@ class KeyboardHookManager:
                 if is_up and self.config_mgr.get("double_shift_switch", True) and self.enabled:
                     now = time.time()
                     if not self._intervening_key_pressed and (now - self._last_shift_up_time < 0.35):
-                        # Двойной Shift
                         w32.toggle_layout()
                         self._last_shift_up_time = 0.0
                     else:
@@ -493,7 +459,7 @@ class KeyboardHookManager:
                         self.current_line.append(delim)
                 return user32.CallNextHookEx(None, nCode, wParam, p_kbd_ptr)
 
-            # Обычные печатные символы
+            # Печатные символы
             is_ru = w32.is_russian_layout()
             char = self._get_char_from_vk_safe(vk, is_ru)
             if char:
