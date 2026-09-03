@@ -76,6 +76,13 @@ class TestLayoutMapper(unittest.TestCase):
         self.assertFalse(lm.should_convert_ru_to_en("программа"))
         self.assertFalse(lm.should_convert_ru_to_en("система"))
         self.assertFalse(lm.should_convert_ru_to_en("клавиатура"))
+        self.assertFalse(lm.should_convert_ru_to_en("делаешь."))
+
+    def test_russian_word_not_converted_to_ru(self):
+        """Русские слова со знаками препинания не должны ошибочно определяться как EN->RU."""
+        self.assertFalse(lm.should_convert_en_to_ru("делаешь."))
+        self.assertFalse(lm.should_convert_en_to_ru("привет."))
+        self.assertFalse(lm.should_convert_en_to_ru("как дела?"))
 
     def test_case_toggle(self):
         """Проверка циклической смены регистра."""

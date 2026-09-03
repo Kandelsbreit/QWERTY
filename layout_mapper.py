@@ -81,7 +81,7 @@ COMMON_RU_WORDS_IN_EN = {
     "yfghbvth": "например", "f[f[ff": "ахахаа", "f[f[f": "ахаха", "f[f": "аха",
     "vj;tim": "можешь", "yfgbcfnm": "написать", "ltkf": "дела", "ltkftim": "делаешь",
     "ltkfk": "делал", "ltkfnm": "делать", "crfpfnm": "сказать", "crfpfk": "сказал",
-    "pyf/": "знаю", "pyftim": "знаешь", "cvjnhb": "смотри", "kexit": "лучше",
+    "pyf/": "знаю", "pyf.": "знаю", "pyftim": "знаешь", "cvjnhb": "смотри", "kexit": "лучше",
     "rjhjxt": "короче", "pljhjdj": "здорово", "rhfcbdj": "красиво", "ghbrjk": "прикол"
 }
 
@@ -105,7 +105,6 @@ COMMON_EN_WORDS_IN_RU = {
     "щзут": "open", "ыфму": "save", "удщыу": "close", "уякше": "exit", "рудз": "help"
 }
 
-# Загрузка расширенных словарей (1.5 млн русских слов + 20 тыс английских)
 FULL_RU_WORDS = set()
 FULL_EN_WORDS = set()
 
@@ -117,7 +116,6 @@ def _load_dictionaries():
         base_dirs.append(sys._MEIPASS)
     base_dirs.append(os.path.dirname(os.path.abspath(__file__)))
 
-    # 1. Русский словарь
     for bdir in base_dirs:
         ru_path = os.path.join(bdir, "dict_ru.gz")
         if os.path.exists(ru_path):
@@ -128,7 +126,6 @@ def _load_dictionaries():
             except Exception as e:
                 print(f"Ошибка загрузки dict_ru.gz: {e}")
 
-    # 2. Английский словарь
     for bdir in base_dirs:
         en_path = os.path.join(bdir, "dict_en.gz")
         if os.path.exists(en_path):
@@ -140,7 +137,6 @@ def _load_dictionaries():
                 print(f"Ошибка загрузки dict_en.gz: {e}")
 
 
-# Инициализируем словари при загрузке модуля
 _load_dictionaries()
 
 
@@ -207,6 +203,13 @@ def should_convert_en_to_ru(word: str, custom_words=None, excluded_words=None) -
 
     lower = clean_word.lower()
 
+    # ЖЕСТКАЯ ЗАЩИТА: Если слово уже состоит из русских букв (например, "делаешь", "привет"),
+    # оно НИ ПРИ КАКИХ УСЛОВИЯХ не должно конвертироваться как EN->RU!
+    has_ru = any(ch in RU_ALPHABET for ch in lower)
+    has_en = any(ch in EN_ALPHABET for ch in lower) or any(ch in "[];'" for ch in lower)
+    if has_ru and not has_en:
+        return False
+
     if excluded_words and lower in excluded_words:
         return False
 
@@ -216,9 +219,8 @@ def should_convert_en_to_ru(word: str, custom_words=None, excluded_words=None) -
     if is_url_or_code(clean_word):
         return False
 
-    # 1. Если это точное английское слово из словаря (например, const, test, window, hello) — НЕ трогаем!
+    # 1. Если это валидное английское слово из словаря (hello, world, const, etc.) — НЕ конвертируем!
     if FULL_EN_WORDS and lower in FULL_EN_WORDS:
-        # Исключение для коротких омонимов вроде 'ns' (нет в англ), 'c', 'd', 'b'
         if len(lower) >= 3 and lower not in ("rfr", "xnj", "yflj"):
             return False
 
@@ -226,7 +228,7 @@ def should_convert_en_to_ru(word: str, custom_words=None, excluded_words=None) -
     if lower in COMMON_RU_WORDS_IN_EN:
         return True
 
-    # 3. Перевод в русскую форму и поиск в 1.5 млн слов
+    # 3. Перевод в русскую форму и поиск в словаре 1.5 млн слов
     ru_candidate = convert_to_ru(lower)
 
     if FULL_RU_WORDS and ru_candidate in FULL_RU_WORDS:
@@ -278,6 +280,13 @@ def should_convert_ru_to_en(word: str, custom_words=None, excluded_words=None) -
         return False
 
     lower = clean_word.lower()
+
+    # ЖЕСТКАЯ ЗАЩИТА: Если слово уже состоит из английских букв,
+    # оно не должно конвертироваться как RU->EN!
+    has_ru = any(ch in RU_ALPHABET for ch in lower)
+    has_en = any(ch in EN_ALPHABET for ch in lower)
+    if has_en and not has_ru:
+        return False
 
     if excluded_words and lower in excluded_words:
         return False

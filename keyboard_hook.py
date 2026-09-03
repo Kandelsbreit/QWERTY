@@ -3,6 +3,7 @@
 keyboard_hook.py
 Низкоуровневый перехватчик клавиатуры (WH_KEYBOARD_LL):
 - Атомарная замена слов и разделителей (SendInput)
+- Строгая проверка текущей раскладки: исключает ложную конвертацию уже русских слов
 - Откат ошибочной замены по Backspace (Undo)
 - Переключение раскладки по двойному нажатию Shift
 - Смена регистра текста (Alt + Pause или Shift + F3)
@@ -149,7 +150,6 @@ class KeyboardHookManager:
         self._last_replacement = None
         self.session_blacklist = set()
 
-        # Автоматическое снятие хука при выходе
         atexit.register(self.stop)
 
     def start(self):
@@ -234,7 +234,6 @@ class KeyboardHookManager:
         replacement = self._last_replacement
         self._last_replacement = None
 
-        # Атомарно возвращаем исходный текст и язык
         w32.atomic_replace_text(
             backspaces=len(replacement["converted_full"]),
             new_text=replacement["original"],
@@ -316,7 +315,7 @@ class KeyboardHookManager:
         if w32.is_process_blacklisted(blacklist):
             return False
 
-        # Текстовые сниппеты (атомарная замена)
+        # Текстовые сниппеты
         snippets = self.config_mgr.get("snippets", {})
         if word in snippets:
             expanded = self.config_mgr.expand_snippet(snippets[word])
@@ -332,8 +331,18 @@ class KeyboardHookManager:
         custom_words = self.config_mgr.get("custom_words", {})
         excluded_words = set(self.config_mgr.get("excluded_words", []))
 
-        should_to_ru = lm.should_convert_en_to_ru(word, custom_words, excluded_words)
-        should_to_en = lm.should_convert_ru_to_en(word, custom_words, excluded_words)
+        # СТРОГАЯ ПРИВЯЗКА К ТЕКУЩЕЙ РАСКЛАДКЕ:
+        is_ru_layout = w32.is_russian_layout()
+        should_to_ru = False
+        should_to_en = False
+
+        if is_ru_layout:
+            # Активна русская раскладка: проверяем ТОЛЬКО ошибочный ввод английских слов (руддщ -> hello)
+            # Русские слова (например, "делаешь", "привет") ЗДЕСЬ НИКОГДА НЕ КОНВЕРТИРУЮТСЯ!
+            should_to_en = lm.should_convert_ru_to_en(word, custom_words, excluded_words)
+        else:
+            # Активна английская раскладка: проверяем ТОЛЬКО ошибочный ввод русских слов (ghbdtn -> привет)
+            should_to_ru = lm.should_convert_en_to_ru(word, custom_words, excluded_words)
 
         if not should_to_ru and not should_to_en:
             return False
@@ -350,8 +359,7 @@ class KeyboardHookManager:
                 "time": time.time()
             }
 
-        # АТОМАРНАЯ ЗАМЕНА В ОДНОМ ВЫЗОВЕ SENDINPUT:
-        # Удаляет исходное слово, переключает раскладку и вставляет исправленное слово с разделителем (пробелом/Enter)
+        # Атомарная замена в одном SendInput
         w32.atomic_replace_text(
             backspaces=len(word),
             new_text=converted_word + delimiter_char,
