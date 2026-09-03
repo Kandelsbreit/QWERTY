@@ -42,7 +42,36 @@ VK_V = 0x56
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-# Настройка сигнатур функций Windows API
+# Строгая типизация ВСЕХ функций Win32 API для 64-битной Windows
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wintypes.HWND
+
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+user32.GetKeyboardLayout.argtypes = [wintypes.DWORD]
+user32.GetKeyboardLayout.restype = ctypes.c_void_p
+
+user32.LoadKeyboardLayoutW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+user32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
+
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
+
+user32.GetKeyState.argtypes = [ctypes.c_int]
+user32.GetKeyState.restype = ctypes.c_short
+
+user32.ToUnicodeEx.argtypes = [
+    ctypes.c_uint,
+    ctypes.c_uint,
+    ctypes.POINTER(ctypes.c_byte),
+    wintypes.LPWSTR,
+    ctypes.c_int,
+    ctypes.c_uint,
+    ctypes.c_void_p
+]
+user32.ToUnicodeEx.restype = ctypes.c_int
+
 kernel32.QueryFullProcessImageNameW.argtypes = [
     wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
 ]
@@ -74,55 +103,60 @@ class INPUT(ctypes.Structure):
 user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
 user32.SendInput.restype = ctypes.c_uint
 
-user32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
-user32.LoadKeyboardLayoutW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
-
 
 def get_foreground_window():
     """Возвращает HWND активного окна."""
-    return user32.GetForegroundWindow()
+    try:
+        return user32.GetForegroundWindow()
+    except Exception:
+        return None
 
 
 def get_window_layout(hwnd=None):
     """
-    Возвращает HKL (идентификатор раскладки) активного окна.
+    Возвращает HKL (идентификатор раскладки) активного окна как целое число.
     """
-    if not hwnd:
-        hwnd = get_foreground_window()
-    if not hwnd:
-        return None
-    tid = user32.GetWindowThreadProcessId(hwnd, None)
-    return user32.GetKeyboardLayout(tid)
+    try:
+        if not hwnd:
+            hwnd = get_foreground_window()
+        if not hwnd:
+            return 0
+        tid = user32.GetWindowThreadProcessId(hwnd, None)
+        hkl_ptr = user32.GetKeyboardLayout(tid)
+        if hkl_ptr is None:
+            return 0
+        return int(hkl_ptr)
+    except Exception:
+        return 0
 
 
 def get_active_process_name() -> str:
     """
     Возвращает имя исполняемого файла (.exe) активного окна.
-    Например: 'code.exe', 'powershell.exe', 'chrome.exe'.
     """
-    hwnd = get_foreground_window()
-    if not hwnd:
-        return ""
-
-    pid = wintypes.DWORD()
-    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-    if not pid.value:
-        return ""
-
-    h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
-    if not h_proc:
-        return ""
-
     try:
-        buf = ctypes.create_unicode_buffer(1024)
-        size = wintypes.DWORD(1024)
-        if kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
-            return os.path.basename(buf.value).lower()
+        hwnd = get_foreground_window()
+        if not hwnd:
+            return ""
+
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+
+        h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if not h_proc:
+            return ""
+
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+            if kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
+                return os.path.basename(buf.value).lower()
+        finally:
+            kernel32.CloseHandle(h_proc)
     except Exception:
         pass
-    finally:
-        kernel32.CloseHandle(h_proc)
-
     return ""
 
 
@@ -156,81 +190,87 @@ def switch_layout_to(target_lang: str, hwnd=None):
     """
     Переключает раскладку активного окна на 'ru' или 'en'.
     """
-    if not hwnd:
-        hwnd = get_foreground_window()
-    if not hwnd:
-        return
+    try:
+        if not hwnd:
+            hwnd = get_foreground_window()
+        if not hwnd:
+            return
 
-    if target_lang.lower() == "ru":
-        hkl = user32.LoadKeyboardLayoutW("00000419", KLF_ACTIVATE)
-    else:
-        hkl = user32.LoadKeyboardLayoutW("00000409", KLF_ACTIVATE)
+        if target_lang.lower() == "ru":
+            hkl = user32.LoadKeyboardLayoutW("00000419", KLF_ACTIVATE)
+        else:
+            hkl = user32.LoadKeyboardLayoutW("00000409", KLF_ACTIVATE)
 
-    user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl)
+        user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, int(hkl) if hkl else 0)
+    except Exception:
+        pass
 
 
 def toggle_layout(hwnd=None):
     """Переключает раскладку активного окна на противоположную."""
-    if not hwnd:
-        hwnd = get_foreground_window()
-    if not hwnd:
-        return
-    user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 2, 0)
+    try:
+        if not hwnd:
+            hwnd = get_foreground_window()
+        if not hwnd:
+            return
+        user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 2, 0)
+    except Exception:
+        pass
 
 
 def send_backspaces(count: int):
     """Эмулирует нажатие клавиши Backspace указанное количество раз."""
     if count <= 0:
         return
+    try:
+        inputs = (INPUT * (count * 2))()
+        for i in range(count):
+            inputs[i * 2].type = INPUT_KEYBOARD
+            inputs[i * 2].ki.wVk = VK_BACK
+            inputs[i * 2].ki.dwFlags = 0
 
-    inputs = (INPUT * (count * 2))()
-    for i in range(count):
-        # Key down
-        inputs[i * 2].type = INPUT_KEYBOARD
-        inputs[i * 2].ki.wVk = VK_BACK
-        inputs[i * 2].ki.dwFlags = 0
-        # Key up
-        inputs[i * 2 + 1].type = INPUT_KEYBOARD
-        inputs[i * 2 + 1].ki.wVk = VK_BACK
-        inputs[i * 2 + 1].ki.dwFlags = KEYEVENTF_KEYUP
+            inputs[i * 2 + 1].type = INPUT_KEYBOARD
+            inputs[i * 2 + 1].ki.wVk = VK_BACK
+            inputs[i * 2 + 1].ki.dwFlags = KEYEVENTF_KEYUP
 
-    user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT))
+        user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT))
+    except Exception:
+        pass
 
 
 def send_unicode_text(text: str):
     """
     Эмулирует ввод строки в виде Unicode-символов.
-    Работает корректно вне зависимости от текущей раскладки приложения.
     """
     if not text:
         return
+    try:
+        inputs = []
+        for ch in text:
+            code = ord(ch)
+            inp_down = INPUT()
+            inp_down.type = INPUT_KEYBOARD
+            inp_down.ki.wVk = 0
+            inp_down.ki.wScan = code
+            inp_down.ki.dwFlags = KEYEVENTF_UNICODE
+            inputs.append(inp_down)
 
-    inputs = []
-    for ch in text:
-        code = ord(ch)
-        # Key down
-        inp_down = INPUT()
-        inp_down.type = INPUT_KEYBOARD
-        inp_down.ki.wVk = 0
-        inp_down.ki.wScan = code
-        inp_down.ki.dwFlags = KEYEVENTF_UNICODE
-        inputs.append(inp_down)
+            inp_up = INPUT()
+            inp_up.type = INPUT_KEYBOARD
+            inp_up.ki.wVk = 0
+            inp_up.ki.wScan = code
+            inp_up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+            inputs.append(inp_up)
 
-        # Key up
-        inp_up = INPUT()
-        inp_up.type = INPUT_KEYBOARD
-        inp_up.ki.wVk = 0
-        inp_up.ki.wScan = code
-        inp_up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-        inputs.append(inp_up)
-
-    c_inputs = (INPUT * len(inputs))(*inputs)
-    user32.SendInput(len(c_inputs), c_inputs, ctypes.sizeof(INPUT))
+        c_inputs = (INPUT * len(inputs))(*inputs)
+        user32.SendInput(len(c_inputs), c_inputs, ctypes.sizeof(INPUT))
+    except Exception:
+        pass
 
 
 # --- Работа с буфером обмена Windows ---
 OpenClipboard = user32.OpenClipboard
-OpenClipboard.argtypes = [ctypes.c_void_p]
+OpenClipboard.argtypes = [wintypes.HWND]
 OpenClipboard.restype = wintypes.BOOL
 
 CloseClipboard = user32.CloseClipboard
@@ -363,7 +403,6 @@ REG_APP_NAME = "QWERTY_Switcher"
 
 
 def is_autostart_enabled() -> bool:
-    """Проверяет, добавлен ли автозапуск в реестр Windows."""
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_RUN_KEY, 0, winreg.KEY_READ) as key:
             winreg.QueryValueEx(key, REG_APP_NAME)
@@ -373,9 +412,6 @@ def is_autostart_enabled() -> bool:
 
 
 def set_autostart(enable: bool, command_path: str = None) -> bool:
-    """
-    Включает или выключает автозапуск программы в реестре Windows.
-    """
     try:
         if enable:
             if not command_path:
