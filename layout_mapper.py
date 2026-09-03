@@ -2,9 +2,13 @@
 """
 layout_mapper.py
 Модуль трансляции символов между русской и английской раскладками,
-эвристического определения языка ввода и преобразования регистра.
+интеллектуального определения языка ввода с миллионным словарем
+и преобразования регистра.
 """
 
+import os
+import sys
+import gzip
 import re
 
 # Таблицы соответствия символов QWERTY <-> ЙЦУКЕН
@@ -57,7 +61,7 @@ RU_PREFIXES = (
     "от", "по", "за", "вы", "до", "со", "об", "из", "без", "над"
 )
 
-# Топ частых коротких русских слов в EN раскладке
+# Быстрый кэш частых слов
 COMMON_RU_WORDS_IN_EN = {
     "ns": "ты", "b": "и", "c": "с", "d": "в", "yf": "на", "yt": "не", "rfr": "как",
     "xnj": "что", "gj": "по", "pf": "за", "bp": "из", "jn": "от", "rjulf": "когда",
@@ -81,7 +85,6 @@ COMMON_RU_WORDS_IN_EN = {
     "rjhjxt": "короче", "pljhjdj": "здорово", "rhfcbdj": "красиво", "ghbrjk": "прикол"
 }
 
-# Топ частых английских слов в RU раскладке
 COMMON_EN_WORDS_IN_RU = {
     "руддщ": "hello", "цщкдв": "world", "пщщпду": "google", "нщгегиу": "youtube",
     "пшеакь": "github", "еуые": "test", "гыук": "user", "зфыыцщкв": "password",
@@ -101,6 +104,44 @@ COMMON_EN_WORDS_IN_RU = {
     "зщые": "post", "туцы": "news", "рщьу": "home", "ашду": "file", "мшуц": "view",
     "щзут": "open", "ыфму": "save", "удщыу": "close", "уякше": "exit", "рудз": "help"
 }
+
+# Загрузка расширенных словарей (1.5 млн русских слов + 20 тыс английских)
+FULL_RU_WORDS = set()
+FULL_EN_WORDS = set()
+
+
+def _load_dictionaries():
+    global FULL_RU_WORDS, FULL_EN_WORDS
+    base_dirs = []
+    if getattr(sys, "_MEIPASS", None):
+        base_dirs.append(sys._MEIPASS)
+    base_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+
+    # 1. Русский словарь
+    for bdir in base_dirs:
+        ru_path = os.path.join(bdir, "dict_ru.gz")
+        if os.path.exists(ru_path):
+            try:
+                with gzip.open(ru_path, "rt", encoding="utf-8", errors="ignore") as f:
+                    FULL_RU_WORDS = set(line.strip().lower() for line in f if line.strip())
+                break
+            except Exception as e:
+                print(f"Ошибка загрузки dict_ru.gz: {e}")
+
+    # 2. Английский словарь
+    for bdir in base_dirs:
+        en_path = os.path.join(bdir, "dict_en.gz")
+        if os.path.exists(en_path):
+            try:
+                with gzip.open(en_path, "rt", encoding="utf-8", errors="ignore") as f:
+                    FULL_EN_WORDS = set(line.strip().lower() for line in f if line.strip())
+                break
+            except Exception as e:
+                print(f"Ошибка загрузки dict_en.gz: {e}")
+
+
+# Инициализируем словари при загрузке модуля
+_load_dictionaries()
 
 
 def convert_to_ru(text: str) -> str:
@@ -175,30 +216,40 @@ def should_convert_en_to_ru(word: str, custom_words=None, excluded_words=None) -
     if is_url_or_code(clean_word):
         return False
 
-    # Прямой словарный хит
+    # 1. Если это точное английское слово из словаря (например, const, test, window, hello) — НЕ трогаем!
+    if FULL_EN_WORDS and lower in FULL_EN_WORDS:
+        # Исключение для коротких омонимов вроде 'ns' (нет в англ), 'c', 'd', 'b'
+        if len(lower) >= 3 and lower not in ("rfr", "xnj", "yflj"):
+            return False
+
+    # 2. Быстрый кэш
     if lower in COMMON_RU_WORDS_IN_EN:
         return True
 
-    # 1. Наличие русских пунктуационных букв в английской раскладке: [ ] ; ' ,
+    # 3. Перевод в русскую форму и поиск в 1.5 млн слов
+    ru_candidate = convert_to_ru(lower)
+
+    if FULL_RU_WORDS and ru_candidate in FULL_RU_WORDS:
+        return True
+
+    # 4. Наличие русских пунктуационных букв в английской раскладке: [ ] ; ' ,
     if any(ch in "[];'" for ch in lower):
         if any(ch in EN_ALPHABET for ch in lower):
             return True
 
-    # 2. Невозможные в английском сочетания согласных/букв
+    # 5. Невозможные в английском сочетания согласных/букв
     for ngram in EN_IMPOSSIBLE_NGRAMS:
         if ngram in lower:
             return True
 
-    # 3. Характерные начала и окончания русских слов
+    # 6. Характерные начала и окончания русских слов
     if lower.startswith(RU_STARTS_IN_EN):
         return True
 
     if lower.endswith(RU_ENDS_IN_EN):
         return True
 
-    # 4. Проверка транслированного слова на соответствие русским паттернам
-    ru_candidate = convert_to_ru(lower)
-
+    # 7. Эвристика по приставкам и окончаниям
     if ru_candidate.startswith(RU_INVALID_STARTS):
         return False
 
@@ -234,19 +285,30 @@ def should_convert_ru_to_en(word: str, custom_words=None, excluded_words=None) -
     if custom_words and lower in custom_words:
         return True
 
+    # 1. Если это валидное русское слово — НЕ конвертируем!
+    if FULL_RU_WORDS and lower in FULL_RU_WORDS:
+        return False
+
+    # 2. Быстрый кэш
     if lower in COMMON_EN_WORDS_IN_RU:
         return True
 
-    # 1. Невозможные русские начала слов (ъ, ь, ы, щк, цщ...)
+    # 3. Перевод в английскую форму и поиск в 20k английских слов
+    en_candidate = convert_to_en(lower)
+
+    if FULL_EN_WORDS and en_candidate in FULL_EN_WORDS:
+        return True
+
+    # 4. Невозможные русские начала слов (ъ, ь, ы, щк, цщ...)
     if lower.startswith(RU_INVALID_STARTS):
         return True
 
-    # 2. Невозможные в русском сочетания букв
+    # 5. Невозможные в русском сочетания букв
     for cluster in RU_IMPOSSIBLE_CLUSTERS:
         if cluster in lower:
             return True
 
-    # 3. 5 или более согласных подряд в русском
+    # 6. 5 или более согласных подряд в русском
     vowels = set("аеёиоуыэюя")
     consonant_count = 0
     for ch in lower:

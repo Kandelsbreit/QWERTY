@@ -6,6 +6,7 @@ tray_app.py
 - Меню переключения режимов (Вкл/Выкл, автоисправление, двойной Shift, Undo)
 - Управление автозапуском при старте Windows в реестре
 - Быстрый доступ к конфигурационному файлу config.json
+- Неблокирующее окно справки в отдельном потоке
 """
 
 import os
@@ -22,12 +23,6 @@ import win32_helper as w32
 
 
 def create_tray_icon_image(status_text: str = "EN", enabled: bool = True) -> Image.Image:
-    """
-    Генерирует аккуратную пиктограмму для трея:
-    - Синяя плашка для EN
-    - Красно-рубиновая плашка для RU
-    - Серая плашка для выключенного состояния
-    """
     size = 64
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -36,7 +31,7 @@ def create_tray_icon_image(status_text: str = "EN", enabled: bool = True) -> Ima
         bg_color = "#5A6268"
         text = "OFF"
     elif status_text == "RU":
-        bg_color = "#D9383A"  # Приятный рубиново-красный
+        bg_color = "#D9383A"  # Рубиново-красный
         text = "RU"
     else:
         bg_color = "#1F6FEB"  # Синий
@@ -97,23 +92,29 @@ class TrayApplication:
     def _open_config(self, icon, item):
         try:
             os.startfile(self.config_mgr.config_path)
-        except Exception as e:
+        except Exception:
             subprocess.Popen(["notepad.exe", self.config_mgr.config_path])
 
     def _show_about(self, icon, item):
-        msg = (
-            "QWERTY Switcher v1.0.0\n\n"
-            "• Автоматическое исправление слов при опечатках в неверной раскладке (Пробел/Enter).\n"
-            "• Pause / Break: мгновенная конвертация последнего слова или выделенного текста.\n"
-            "• Shift + Pause: конвертация всей набранной строки.\n"
-            "• Alt + Pause / Shift + F3: смена регистра выделения (ЗАГЛАВНЫЕ/строчные/Как В Заголовке).\n"
-            "• Двойной Shift: быстрое переключение раскладки.\n"
-            "• Backspace (Undo): мгновенный откат ошибочной автозамены.\n"
-            "• Текстовые сниппеты: ввод @@ вставит email, дд или dd — текущую дату.\n"
-            "• Черный список приложений: автоисправление отключается в играх и IDE (настраивается в config.json).\n\n"
-            "Потребление памяти: ~20 МБ. Полная приватность и локальная работа."
-        )
-        ctypes.windll.user32.MessageBoxW(0, msg, "О программе QWERTY Switcher", 0x40 | 0x10000)
+        # Запускаем MessageBox в отдельном потоке, чтобы не блокировать цикл сообщений трея
+        def task():
+            msg = (
+                "QWERTY Switcher v1.0.0\n\n"
+                "• Автоматическое исправление слов при опечатках в неверной раскладке (Пробел / Enter).\n"
+                "• Pause / Break: мгновенная конвертация последнего слова или выделенного текста.\n"
+                "• Shift + Pause: конвертация всей набранной строки.\n"
+                "• Alt + Pause / Shift + F3: смена регистра выделения (ЗАГЛАВНЫЕ/строчные/Как В Заголовке).\n"
+                "• Двойной Shift: быстрое переключение раскладки.\n"
+                "• Backspace (Undo): мгновенный откат ошибочной автозамены.\n"
+                "• Текстовые сниппеты: ввод @@ вставит email, дд или dd — текущую дату.\n"
+                "• Черный список приложений: автоисправление отключается в играх и IDE (в config.json).\n\n"
+                "Встроенный словарь: 1.5 млн русских слов + 20 тыс английских слов.\n"
+                "Полная приватность и локальная работа."
+            )
+            # 0x00000040 = MB_ICONINFORMATION, 0x00040000 = MB_TOPMOST
+            ctypes.windll.user32.MessageBoxW(0, msg, "О программе QWERTY Switcher", 0x40 | 0x40000)
+
+        threading.Thread(target=task, daemon=True).start()
 
     def _exit_app(self, icon, item):
         self._running = False
@@ -198,7 +199,6 @@ class TrayApplication:
             menu
         )
 
-        # Запускаем поток мониторинга раскладки
         monitor_thread = threading.Thread(target=self._monitor_active_layout, daemon=True)
         monitor_thread.start()
 
