@@ -4,6 +4,7 @@ test_switcher.py
 Комплексные модульные тесты для QWERTY Switcher:
 - Проверка полноты и обратимости таблицы маппинга
 - Проверка сохранения пунктуации (. , ! ? ; : " ')
+- Защита коротких 1-2 буквенных английских слов (a, i, is, it, at, to, by, if, no, we, he, be)
 - Проверка эвристического определения языка ввода (1.5M слов)
 - Проверка сохранения регистра текста
 - Проверка работы с буфером обмена
@@ -39,6 +40,24 @@ class TestLayoutMapper(unittest.TestCase):
         self.assertEqual(lm.convert_preserving_punctuation("ghbdtn?", to_ru=True), "привет?")
         self.assertEqual(lm.convert_preserving_punctuation("руддщ,", to_ru=False), "hello,")
         self.assertEqual(lm.convert_preserving_punctuation("руддщ.", to_ru=False), "hello.")
+
+    def test_en_short_words_protection(self):
+        """Защита от ложного переключения коротких английских слов."""
+        en_words = [
+            "a", "i", "is", "it", "at", "to", "by", "or", "an", "as",
+            "if", "no", "so", "do", "go", "my", "up", "we", "he", "me",
+            "be", "us", "in", "on", "of", "ok", "hi"
+        ]
+        for w in en_words:
+            self.assertFalse(lm.should_convert_en_to_ru(w), f"English word '{w}' was falsely converted to RU!")
+
+    def test_ru_short_words_detection(self):
+        """Проверка корректного распознавания коротких русских слов в EN раскладке."""
+        ru_words = [
+            "yt", "yf", "gj", "pf", "bp", "jn", "lj", "nj", "jy", "vs", "ds", "ns", "lf", "yj"
+        ]
+        for w in ru_words:
+            self.assertTrue(lm.should_convert_en_to_ru(w), f"Russian word '{w}' in EN layout was not detected!")
 
     def test_en_to_ru_detection(self):
         """Проверка детекции ошибочной английской раскладки."""

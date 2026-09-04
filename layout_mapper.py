@@ -2,8 +2,8 @@
 """
 layout_mapper.py
 Модуль трансляции символов между русской и английской раскладками,
-интеллектуального определения языка ввода с миллионным словарем
-и преобразования регистра.
+интеллектуального определения языка ввода с миллионным словарем,
+защитой от ложных срабатываний на коротких словах и сохранением пунктуации.
 """
 
 import os
@@ -61,30 +61,42 @@ RU_PREFIXES = (
     "от", "по", "за", "вы", "до", "со", "об", "из", "без", "над"
 )
 
-# Быстрый кэш частых слов
+# Строгий список коротких 2-буквенных английских слов (НИКОГДА не конвертировать в RU)
+COMMON_EN_SHORT = {
+    "am", "an", "as", "at", "be", "by", "do", "go", "he", "hi", "if", "in", "is", "it",
+    "me", "my", "no", "of", "ok", "on", "or", "so", "to", "up", "us", "we", "re"
+}
+
+# Строгий список 2-буквенных русских слов в EN раскладке (КОНВЕРТИРОВАТЬ в RU)
+COMMON_RU_SHORT = {
+    "yt": "не", "yf": "на", "gj": "по", "pf": "за", "bp": "из", "jn": "от",
+    "lj": "до", "nj": "то", "jy": "он", "vs": "мы", "ds": "вы", "ns": "ты",
+    "lf": "да", "yj": "но", "ye": "ну", "kb": "ли", "tt": "ее", "nt": "те",
+    "ne": "ту", "nf": "та", "xt": "че", "xj": "чо", ";t": "же", ",s": "бы",
+    "b[": "их", "bv": "им", "tq": "ей"
+}
+
+# Быстрый кэш частых русских слов в EN раскладке
 COMMON_RU_WORDS_IN_EN = {
-    "ns": "ты", "b": "и", "c": "с", "d": "в", "yf": "на", "yt": "не", "rfr": "как",
-    "xnj": "что", "gj": "по", "pf": "за", "bp": "из", "jn": "от", "rjulf": "когда",
-    "tckb": "если", "ghbdtn": "привет", "gjrf": "пока", "cgfcb,j": "спасибо",
-    "lf": "да", "ytn": "нет", "jy": "он", "jyf": "она", "jyb": "они", "vs": "мы",
-    "ds": "вы", "rnj": "кто", "ult": "где", "nfr": "так", "e;t": "уже", "djn": "вот",
-    "xtv": "чем", "bkb": "или", "dct": "все", "vtyz": "меня", "nt,z": "тебя",
-    "tuj": "его", "tt": "ее", "b[": "их", "yfvb": "нами", "dfvb": "вами",
-    "ctqxfc": "сейчас", "ntgthm": "теперь", "nj;t": "тоже", "nfr;t": "также",
-    "ghjcnj": "просто", "vj;yj": "можно", "yflj": "надо", "ye;yj": "нужно",
-    "kturj": "легко", "kture": "легкую", "kture.": "легкую",
-    "ghjuhfvve": "программу", "ghjuhfvvf": "программа",
-    "fdnjpfgecr": "автозапуск", "fdnjpfgecrjv": "автозапуском", "rjnjhfz": "которая",
-    "dctulf": "всегда", "dbcbn": "висит", "nhtt": "трее", "gthtrk.xftn": "переключает",
-    "hfccrkflre": "раскладку", "hfcrkflrf": "раскладка", "heccrjuj": "русского",
-    "fyukbqcrbq": "английский", "yfj,jhjn": "наоборот", "ytghfdbkmyfz": "неправильная",
-    "yfghbvth": "например", "f[f[ff": "ахахаа", "f[f[f": "ахаха", "f[f": "аха",
-    "vj;tim": "можешь", "yfgbcfnm": "написать", "ltkf": "дела", "ltkftim": "делаешь",
-    "ltkfk": "делал", "ltkfnm": "делать", "crfpfnm": "сказать", "crfpfk": "сказал",
-    "pyf/": "знаю", "pyf.": "знаю", "pyftim": "знаешь", "cvjnhb": "смотри", "kexit": "лучше",
+    "rfr": "как", "xnj": "что", "rjulf": "когда", "tckb": "если", "ghbdtn": "привет",
+    "gjrf": "пока", "cgfcb,j": "спасибо", "rnj": "кто", "ult": "где", "nfr": "так",
+    "e;t": "уже", "djn": "вот", "xtv": "чем", "bkb": "или", "dct": "все",
+    "vtyz": "меня", "nt,z": "тебя", "tuj": "его", "ctqxfc": "сейчас", "ntgthm": "теперь",
+    "nj;t": "тоже", "nfr;t": "также", "ghjcnj": "просто", "vj;yj": "можно",
+    "yflj": "надо", "ye;yj": "нужно", "kturj": "легко", "kture": "легкую",
+    "ghjuhfvve": "программу", "ghjuhfvvf": "программа", "fdnjpfgecr": "автозапуск",
+    "fdnjpfgecrjv": "автозапуском", "rjnjhfz": "которая", "dctulf": "всегда",
+    "dbcbn": "висит", "nhtt": "трее", "gthtrk.xftn": "переключает", "hfccrkflre": "раскладку",
+    "hfcrkflrf": "раскладка", "heccrjuj": "русского", "fyukbqcrbq": "английский",
+    "yfj,jhjn": "наоборот", "ytghfdbkmyfz": "неправильная", "yfghbvth": "например",
+    "f[f[ff": "ахахаа", "f[f[f": "ахаха", "f[f": "аха", "vj;tim": "можешь",
+    "yfgbcfnm": "написать", "ltkf": "дела", "ltkftim": "делаешь", "ltkfk": "делал",
+    "ltkfnm": "делать", "crfpfnm": "сказать", "crfpfk": "сказал", "pyf/": "знаю",
+    "pyf.": "знаю", "pyftim": "знаешь", "cvjnhb": "смотри", "kexit": "лучше",
     "rjhjxt": "короче", "pljhjdj": "здорово", "rhfcbdj": "красиво", "ghbrjk": "прикол"
 }
 
+# Быстрый кэш частых английских слов в RU раскладке
 COMMON_EN_WORDS_IN_RU = {
     "руддщ": "hello", "цщкдв": "world", "пщщпду": "google", "нщгегиу": "youtube",
     "пшеакь": "github", "еуые": "test", "гыук": "user", "зфыыцщкв": "password",
@@ -153,8 +165,7 @@ def convert_to_en(text: str) -> str:
 def convert_preserving_punctuation(word: str, to_ru: bool = True) -> str:
     """
     Конвертирует слово, сохраняя хвостовые знаки препинания (. , ! ? ; : " ' -)
-    без их ошибочной трансляции в русские/английские буквы
-    (например, 'ghbdtn,' -> 'привет,', а не 'приветб').
+    без их ошибочной трансляции в буквы (например, 'ghbdtn,' -> 'привет,', а не 'приветб').
     """
     base_word = word.rstrip(".,!?;:\"'-")
     trailing = word[len(base_word):]
@@ -211,14 +222,14 @@ def should_convert_en_to_ru(word: str, custom_words=None, excluded_words=None) -
     """
     Определяет, было ли слово ошибочно набрано в английской раскладке вместо русской.
     """
-    clean_word = word.strip().rstrip(".,!?;:\"'")
-    if not clean_word or len(clean_word) < 1:
+    clean_word = word.strip().rstrip(".,!?;:\"'-")
+    # Одиночные буквы (a, i, x, c) никогда не конвертируем на пробеле (пункты списков, инициалы, переменные)
+    if not clean_word or len(clean_word) < 2:
         return False
 
     lower = clean_word.lower()
 
-    # ЖЕСТКАЯ ЗАЩИТА: Если слово уже состоит из русских букв (например, "делаешь", "привет"),
-    # оно НИ ПРИ КАКИХ УСЛОВИЯХ не должно конвертироваться как EN->RU!
+    # Защита: если слово уже состоит из русских букв, не трогаем!
     has_ru = any(ch in RU_ALPHABET for ch in lower)
     has_en = any(ch in EN_ALPHABET for ch in lower) or any(ch in "[];'" for ch in lower)
     if has_ru and not has_en:
@@ -233,39 +244,46 @@ def should_convert_en_to_ru(word: str, custom_words=None, excluded_words=None) -
     if is_url_or_code(clean_word):
         return False
 
-    # 1. Если это валидное английское слово из словаря (hello, world, const, etc.) — НЕ конвертируем!
-    if FULL_EN_WORDS and lower in FULL_EN_WORDS:
-        if len(lower) >= 3 and lower not in ("rfr", "xnj", "yflj"):
+    # 1. Защита коротких 2-буквенных английских слов (is, it, at, to, by, if, no, we, he, be...)
+    if len(lower) == 2:
+        if lower in COMMON_EN_SHORT:
             return False
+        if lower in COMMON_RU_SHORT:
+            return True
 
-    # 2. Быстрый кэш
+    # 2. Быстрый словарь частых русских слов
     if lower in COMMON_RU_WORDS_IN_EN:
         return True
 
-    # 3. Перевод в русскую форму и поиск в словаре 1.5 млн слов
-    ru_candidate = convert_to_ru(lower)
+    # 3. Проверка по словарю английских слов (для слов длины >= 3)
+    if FULL_EN_WORDS and lower in FULL_EN_WORDS:
+        # Исключение для коротких русских омонимов
+        if lower not in ("rfr", "xnj", "yflj", "djn", "nfr", "dct", "bkb", "xtv"):
+            return False
 
+    # 4. Перевод в русскую форму и поиск в 1.5 млн словаре
+    ru_candidate = convert_to_ru(lower)
     if FULL_RU_WORDS and ru_candidate in FULL_RU_WORDS:
         return True
 
-    # 4. Наличие русских пунктуационных букв в английской раскладке: [ ] ; ' ,
+    # 5. Наличие русских букв на клавишах пунктуации: [ ] ; '
     if any(ch in "[];'" for ch in lower):
         if any(ch in EN_ALPHABET for ch in lower):
             return True
 
-    # 5. Невозможные в английском сочетания согласных/букв
+    # 6. Невозможные в английском сочетания букв (n-grams)
     for ngram in EN_IMPOSSIBLE_NGRAMS:
         if ngram in lower:
             return True
 
-    # 6. Характерные начала и окончания русских слов
+    # 7. Характерные начала и окончания русских слов
     if lower.startswith(RU_STARTS_IN_EN):
         return True
 
     if lower.endswith(RU_ENDS_IN_EN):
         return True
 
-    # 7. Эвристика по приставкам и окончаниям
+    # 8. Эвристика по приставкам и окончаниям
     if ru_candidate.startswith(RU_INVALID_STARTS):
         return False
 
@@ -289,14 +307,13 @@ def should_convert_ru_to_en(word: str, custom_words=None, excluded_words=None) -
     """
     Определяет, было ли слово ошибочно набрано в русской раскладке вместо английской.
     """
-    clean_word = word.strip().rstrip(".,!?;:\"'")
-    if not clean_word or len(clean_word) < 1:
+    clean_word = word.strip().rstrip(".,!?;:\"'-")
+    if not clean_word or len(clean_word) < 2:
         return False
 
     lower = clean_word.lower()
 
-    # ЖЕСТКАЯ ЗАЩИТА: Если слово уже состоит из английских букв,
-    # оно не должно конвертироваться как RU->EN!
+    # Защита: если слово уже состоит из английских букв, не трогаем!
     has_ru = any(ch in RU_ALPHABET for ch in lower)
     has_en = any(ch in EN_ALPHABET for ch in lower)
     if has_en and not has_ru:
@@ -312,13 +329,12 @@ def should_convert_ru_to_en(word: str, custom_words=None, excluded_words=None) -
     if FULL_RU_WORDS and lower in FULL_RU_WORDS:
         return False
 
-    # 2. Быстрый кэш
+    # 2. Быстрый кэш частых английских слов в русской раскладке
     if lower in COMMON_EN_WORDS_IN_RU:
         return True
 
     # 3. Перевод в английскую форму и поиск в 20k английских слов
     en_candidate = convert_to_en(lower)
-
     if FULL_EN_WORDS and en_candidate in FULL_EN_WORDS:
         return True
 

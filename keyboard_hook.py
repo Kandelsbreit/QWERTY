@@ -5,7 +5,9 @@ keyboard_hook.py
 - Атомарная замена слов и разделителей (SendInput)
 - Сохранение пунктуации при автозамене (исключает превращение запятой в 'б' или точки в 'ю')
 - Поддержка дефиса '-' в сложных словах (что-то, как-нибудь, well-known)
-- Строгая проверка текущей раскладки: исключает ложную конвертацию уже русских слов
+- Точная обработка регистра для всех OEM-букв (х, ъ, ж, э, б, ю, ё) и символов со Shift
+- Очистка буфера при переключении окон (исключает утечку недописанного текста между приложениями)
+- Обработка Tab и разделителей
 - Откат ошибочной замены по Backspace (Undo)
 - Переключение раскладки по двойному нажатию Shift
 - Смена регистра текста (Alt + Pause или Shift + F3)
@@ -56,7 +58,7 @@ VK_F3 = 0x72
 
 LLKHF_INJECTED = 0x00000010
 
-# Таблицы маппинга символов
+# Буквы A-Z
 VK_LETTERS_EN = {vk: chr(vk + 32) for vk in range(0x41, 0x5B)}
 VK_LETTERS_RU = {
     0x41: "ф", 0x42: "и", 0x43: "с", 0x44: "в", 0x45: "у", 0x46: "а",
@@ -66,14 +68,10 @@ VK_LETTERS_RU = {
     0x59: "н", 0x5A: "я"
 }
 
-# Включаем дефис 0xBD и равно 0xBB
-VK_OEM_EN = {
-    0xBA: ";", 0xBF: "/", 0xC0: "`", 0xDB: "[", 0xDC: "\\", 0xDD: "]", 0xDE: "'",
-    0xBC: ",", 0xBE: ".", 0xBD: "-", 0xBB: "="
-}
-VK_OEM_RU = {
-    0xBA: "ж", 0xBF: ".", 0xC0: "ё", 0xDB: "х", 0xDC: "\\", 0xDD: "ъ", 0xDE: "э",
-    0xBC: "б", 0xBE: "ю", 0xBD: "-", 0xBB: "="
+# Русские буквы на OEM клавишах
+VK_RU_OEM_LETTERS = {
+    0xDB: "х", 0xDD: "ъ", 0xBA: "ж", 0xDE: "э",
+    0xBC: "б", 0xBE: "ю", 0xC0: "ё"
 }
 
 VK_SHIFT_NUMS_EN = {
@@ -138,6 +136,7 @@ class KeyboardHookManager:
         self.current_word = []
         self.current_line = []
         self.lock = threading.Lock()
+        self._last_hwnd = None
 
         # Состояния модификаторов
         self.shift_down = False
@@ -208,15 +207,44 @@ class KeyboardHookManager:
         caps = bool(user32.GetKeyState(VK_CAPITAL) & 0x0001)
         uppercase = (self.shift_down ^ caps)
 
+        # 1. Алфавитные клавиши A-Z
         if 0x41 <= vk <= 0x5A:
             ch = VK_LETTERS_RU.get(vk, "") if is_ru else VK_LETTERS_EN.get(vk, "")
             return ch.upper() if uppercase else ch
 
-        if is_ru and vk in VK_OEM_RU:
-            return VK_OEM_RU[vk]
-        elif not is_ru and vk in VK_OEM_EN:
-            return VK_OEM_EN[vk]
+        # 2. OEM клавиши с учетом текущей раскладки и Shift/Caps
+        if is_ru:
+            if vk in VK_RU_OEM_LETTERS:
+                ch = VK_RU_OEM_LETTERS[vk]
+                return ch.upper() if uppercase else ch
 
+            if self.shift_down:
+                ru_shift_oem = {0xBF: ",", 0xBD: "_", 0xBB: "+", 0xDC: "/"}
+                if vk in ru_shift_oem:
+                    return ru_shift_oem[vk]
+            else:
+                ru_noshift_oem = {0xBF: ".", 0xBD: "-", 0xBB: "=", 0xDC: "\\"}
+                if vk in ru_noshift_oem:
+                    return ru_noshift_oem[vk]
+        else:
+            if self.shift_down:
+                en_shift_oem = {
+                    0xBA: ":", 0xDE: '"', 0xBC: "<", 0xBE: ">", 0xBF: "?",
+                    0xDB: "{", 0xDD: "}", 0xC0: "~", 0xBD: "_", 0xBB: "+",
+                    0xDC: "|"
+                }
+                if vk in en_shift_oem:
+                    return en_shift_oem[vk]
+            else:
+                en_noshift_oem = {
+                    0xBA: ";", 0xDE: "'", 0xBC: ",", 0xBE: ".", 0xBF: "/",
+                    0xDB: "[", 0xDD: "]", 0xC0: "`", 0xBD: "-", 0xBB: "=",
+                    0xDC: "\\"
+                }
+                if vk in en_noshift_oem:
+                    return en_noshift_oem[vk]
+
+        # 3. Цифровые клавиши 0-9
         if 0x30 <= vk <= 0x39:
             if self.shift_down:
                 return (VK_SHIFT_NUMS_RU if is_ru else VK_SHIFT_NUMS_EN).get(vk, "")
@@ -243,6 +271,9 @@ class KeyboardHookManager:
             target_lang=replacement["orig_lang"]
         )
         self.session_blacklist.add(replacement["original"].lower())
+
+        with self.lock:
+            self.current_word = list(replacement["original"])
         return True
 
     def _convert_last_word_or_line(self, use_full_line=False):
@@ -386,6 +417,15 @@ class KeyboardHookManager:
             is_down = (wParam == WM_KEYDOWN or wParam == WM_SYSKEYDOWN)
             is_up = (wParam == WM_KEYUP or wParam == WM_SYSKEYUP)
 
+            # Проверка смены активного окна: очищаем буфер, чтобы недопечатанный текст не перетекал
+            cur_hwnd = w32.get_foreground_window()
+            if self._last_hwnd != cur_hwnd:
+                self._last_hwnd = cur_hwnd
+                with self.lock:
+                    self.current_word.clear()
+                    self.current_line.clear()
+                self._last_replacement = None
+
             # Отслеживание Shift / Ctrl / Alt / Win
             if vk in (VK_LSHIFT, VK_RSHIFT):
                 self.shift_down = is_down
@@ -428,7 +468,7 @@ class KeyboardHookManager:
             if not self.enabled:
                 return user32.CallNextHookEx(None, nCode, wParam, p_kbd_ptr)
 
-            # Комбинации Ctrl/Alt/Win
+            # Комбинации Ctrl/Alt/Win (копирование, вставка, выделение всего)
             if self.ctrl_down or self.alt_down or self.win_down:
                 if vk in (ord('C'), ord('V'), ord('X'), ord('Z'), ord('A')):
                     with self.lock:
@@ -436,7 +476,7 @@ class KeyboardHookManager:
                         self.current_line.clear()
                 return user32.CallNextHookEx(None, nCode, wParam, p_kbd_ptr)
 
-            # Навигация
+            # Навигация (стрелки, Del, Esc)
             if vk in (VK_ESCAPE, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_DELETE):
                 with self.lock:
                     self.current_word.clear()
@@ -458,9 +498,15 @@ class KeyboardHookManager:
 
             self._last_replacement = None
 
-            # Разделители слов (Space / Enter)
-            if vk in (VK_SPACE, VK_RETURN):
-                delim = "\n" if vk == VK_RETURN else " "
+            # Разделители слов (Space / Enter / Tab)
+            if vk in (VK_SPACE, VK_RETURN, VK_TAB):
+                if vk == VK_RETURN:
+                    delim = "\n"
+                elif vk == VK_TAB:
+                    delim = "\t"
+                else:
+                    delim = " "
+
                 if self.auto_switch:
                     handled = self._handle_auto_switch(delim)
                     if handled:

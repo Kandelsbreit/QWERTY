@@ -3,12 +3,14 @@
 config.py
 Управление конфигурацией QWERTY Switcher.
 Загрузка, сохранение и значения по умолчанию в формате JSON.
-Поддерживает постоянное сохранение настроек рядом с .exe или в %APPDATA%.
+Поддерживает постоянное сохранение настроек рядом с .exe или в %APPDATA%
+и динамическую перезагрузку при редактировании файла.
 """
 
 import os
 import sys
 import json
+import time
 from datetime import datetime
 
 CONFIG_FILE = "config.json"
@@ -78,12 +80,15 @@ class ConfigManager:
     def __init__(self, config_path=None):
         self.config_path = config_path or get_default_config_path()
         self.config = {}
+        self._last_mtime = 0.0
+        self._last_check = 0.0
         self.load()
 
     def load(self):
         """Загружает настройки из JSON файла или создает значения по умолчанию."""
         if os.path.exists(self.config_path):
             try:
+                self._last_mtime = os.path.getmtime(self.config_path)
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                     self.config = DEFAULT_CONFIG.copy()
@@ -103,10 +108,21 @@ class ConfigManager:
                 os.makedirs(dirname, exist_ok=True)
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
+            self._last_mtime = os.path.getmtime(self.config_path)
         except Exception as e:
             print(f"Ошибка сохранения config.json: {e}")
 
     def get(self, key, default=None):
+        now = time.time()
+        if now - self._last_check > 1.0:
+            self._last_check = now
+            if os.path.exists(self.config_path):
+                try:
+                    mtime = os.path.getmtime(self.config_path)
+                    if mtime != self._last_mtime:
+                        self.load()
+                except Exception:
+                    pass
         return self.config.get(key, default)
 
     def set(self, key, value):
